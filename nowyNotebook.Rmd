@@ -1,0 +1,637 @@
+Przygotowanie danych 
+```{r}
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(stringr)
+library(visdat)
+library(sf)
+library(cowplot)
+dane<- read_xlsx("dane.xlsx", sheet = "dane") %>% rename(JPT_KOD_JE = Kod) 
+
+name<-names(which(colSums(is.na(dane))>0))
+filter(dane, is.na(dane$`wskaźnik opieki nad dziećmi`))
+row.names(dane)<-dane$Powiat
+
+dane<-dane %>% 
+  rename('n01' = 'wskaźnik cen lokali') %>% 
+  rename('n02' = 'wskaźnik powierzchni mieszkania') %>% 
+  rename('n03' = 'wskaźnik mieszkań') %>% 
+  rename('p01' = 'wskaźnik ofert pracy') %>% 
+  rename('p02' = 'wskaźnik bezrobocia') %>% 
+  rename('p03' = 'wskaźnik dochodu') %>%  
+  rename('k01' = 'wskaźnik edukacji podstawowej') %>% 
+  rename('k02' = 'wskaźnik nauczania języków obcych w szkole podstawowej') %>% 
+  rename('k03' = 'wskaźnik nauczania języków obcych w szkole licealnej') %>%
+  rename('k04' = 'wskaźnik opieki nad dziećmi') %>% 
+  rename('k05' = 'wskaźnik kultury') %>% 
+  rename('k06' = 'wskaźnik rozrywki') %>% 
+  rename('s01' = 'wskaźnik zieleni') %>% 
+  rename('m01' = 'wskaźnik dostępności lekarstw') %>% 
+  rename('m02' = 'wskaźnik medycyny') %>% 
+  rename('b01' = 'wskaźnik wykrywalności sprawców przestępstw') %>% 
+  rename('b02' = 'wskaźnik przestępstw') %>% 
+  rename('b03' = 'wskaźnik miejscowych zagrożeń') %>% 
+  rename('t01' = 'wskaźnik przystanków komunikacji miejskiej')
+
+dane['k02']<-dane['k02']/100
+dane['k03']<-dane['k03']/100
+dane['p02']<-dane['p02']/100
+theme_set(theme_bw(base_size=16))
+
+missing_data<-vis_miss(dane)+ylab('Obserwacje')
+ggsave(filename='obrazy/missing.jpg', plot = missing_data)
+
+#zmieniamy nazwe Kod na JPT_KOD_JE 
+dane['k04'] <- replace(dane['k04'], is.na(dane['k04']), mean(dane$k04, na.rm=TRUE))
+
+dane$Powiat<-str_replace(dane$Powiat, "Powiat ", "")
+
+x_ij <- dane %>% select(3:21) %>%as.matrix()
+row.names(x_ij) <-dane%>%select(2)%>%as.vector()%>%array()%>%unlist()
+
+powiaty<-read_sf('powiaty/powiaty.shp')
+kuj_pom <- powiaty[substr(powiaty$JPT_KOD_JE, 0, 2) == '04', ] 
+kuj_pom$JPT_NAZWA_ <-str_replace(kuj_pom$JPT_NAZWA_, "powiat ", "")
+kuj_pom_miasta <- kuj_pom[substr(kuj_pom$JPT_KOD_JE, 0, 3) == '046', ] 
+kuj_pom_pow <- kuj_pom[(substr(kuj_pom$JPT_KOD_JE, 0, 3) != '046'), ] 
+
+```
+
+Macierz korelacji zmiennych
+```{r}
+library(reshape2)
+library(ggthemes)
+library(extrafont)
+library(ggplot2)
+library(remotes)
+library(cowplot)
+
+# Get upper triangle of the correlation matrix
+get_upper_tri <- function(data){
+  data[lower.tri(data)]<- NA
+  return(data)
+}
+
+reorder_data <- function(data){
+  # Use correlation between variables as distance
+  dd <- as.dist((1-data)/2)
+  hc <- hclust(dd)
+  data <-data[hc$order, hc$order]
+}
+
+# Reorder the correlation matrix
+data<-round(cor(x_ij),2)
+data <- reorder_data(data)
+upper_tri <- get_upper_tri(data)
+# Melt the correlation matrix
+melted_data <- melt(upper_tri, na.rm = TRUE)
+# Create a ggheatmap
+ggheatmap <- ggplot(melted_data, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "#b5e2fa", high = "#f7a072", mid = "#f9f7f3", 
+    limit = c(-1,1), 
+    name="Pearson\nCorrelation") +
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 2) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(colour = "black", size = 6),
+    axis.text.y = element_text(colour = "black", size = 6)
+    )
+
+save_plot(plot=ggheatmap, filename='obrazy/corr.png')
+```
+
+Metoda bezwzorcowa
+```{r}
+#bezwzorcow
+library(dplyr)
+stymulanta <- c('+', '+', '+', '+', '-', '+', '+', '+', '-', '+', '+', '-', '+', '+', '+', '+', '+', '+', '-')
+
+colnames(x_ij)
+
+x<-x_ij
+
+for(j in 1:19) {
+  if(stymulanta[j]=='-') {
+    x[,j]<-(1/x_ij[,j])
+    print(x[,j])
+  } 
+}
+
+z_ij<-scale(x, center = TRUE, scale = TRUE)
+
+p_i <- matrix(0,nrow(z_ij),1, dimnames=list(row.names(z_ij)))
+for(i in 1:nrow(z_ij)) {
+  p_i[i] <- sum(z_ij[i,])
+}
+
+z_oj<-matrix(0,1,ncol(z_ij))
+colnames(z_oj)<-colnames(z_ij)
+for(j in 1:ncol(z_ij)) {
+  z_oj[j] <- max(z_ij[,j])
+}
+
+z_moj<-matrix(0,1,ncol(z_ij))
+colnames(z_moj)<-colnames(z_ij)
+for(j in 1:ncol(z_ij)) {
+  z_moj[j] <- min(z_ij[,j])
+}
+
+p_o<-sum(z_oj)
+p_mo<-sum(z_moj)
+
+m_i<- ((p_i-p_mo)/(p_o-p_mo))%>%round(3)%>%as.data.frame(row.names=row.names(p_i))
+colnames(m_i)<-'bezwzorcowa'
+#ranking$bezwzorcowa <-m_i%>%round(3)
+```
+
+Metoda TOPSIS
+```{r}
+#TOPSIS
+if(!require('MCDA')) {
+  install.packages('MCDA')
+  library('MCDA')
+}
+weights <- rep(1,19)
+criteria <- c('max','max','max','max','min','max','max','max','min','max','max','min','max','max','max','max','max','max','min')
+M<-TOPSIS(x_ij, weights, criteria)%>%round(3) %>% as.data.frame(row.names=names(x_ij))
+colnames(M)<-'TOPSIS'
+ranking<-merge(m_i, M, by='row.names')
+row.names(ranking)<-ranking$Row.names
+ranking<-ranking%>%select(-1)
+
+``` 
+
+Metoda Hellwig
+```{r}
+#hellwig
+w<-rep(1,19) #wagi
+scaled<-scale(x_ij)*w
+criteria <- c('max','max','max','max','min','max','max','max','min','max','max','min','max','max','max','max','max','max','min')
+
+wzorzec<-scaled[1,] #wzorzec
+for(j in c(1:ncol(scaled))) {
+  if(criteria[j]=='max') {
+    wzorzec[j]<- max(scaled[,j])
+  }else if(criteria[j]=='min') {
+    wzorzec[j]<- min(scaled[,j])
+  }
+}
+
+dpl <- scaled[,1]
+for(i in 1:nrow(scaled)) {
+  dpl[i]<-sqrt(sum((scaled[i,]-wzorzec)^2))
+}
+
+dpl_matrix<-dpl%>%as.matrix()
+
+d_bar<-sum(dpl)/nrow(dpl_matrix)
+
+s_d<-z_ij[,1]
+for(i in 1:nrow(z_ij)){
+  s_d[i] <- sqrt(sum((dpl[i]-d_bar)^2)/nrow(dpl_matrix))
+}
+s_d<-s_d%>%as.matrix()
+
+d<-d_bar+2*s_d
+
+h_i <- (1-(dpl/d)) %>%round(8) %>% as.data.frame(row.names=names(dpl))
+colnames(h_i)<-'Hellwig'
+
+ranking<-merge(ranking, h_i, by='row.names')
+row.names(ranking)<-ranking$Row.names
+ranking<-ranking%>%select(-1)
+
+#clustersim
+
+```
+
+Metoda kmeans i metoda łokcia
+```{r}
+library(factoextra)
+library(purrr)
+
+#Przykładowy wykres metody łokcia (rozdiał 2)
+plot(c(1:8), c(2000,900,700,500,400,300,200,150),
+       type="b", pch = 19, frame = FALSE, 
+       xlab="Liczba klastrów",
+       ylab="Całkowita suma kwadratów wewnątrz klastra"
+     )
+
+elbow<-c()
+difference<-c()
+
+k_centers<-c(1:19)
+
+#z_ij<-matrix(0, nrow(x_ij),ncol(x_ij))
+#row.names(z_ij)<-row.names(x_ij)
+#colnames(z_ij)<-colnames(x_ij)
+#for(j in 1:ncol(x)){
+#  z_ij[,j]<-(x_ij[,j]-min(x_ij[,j]))/(max(x_ij[,j])-min(x_ij[,j]))
+#}
+
+for(i in k_centers){
+  elbow[i]<- kmeans(x_ij, centers = i, nstart = 25)$tot.withinss
+  if(i > 1){
+    difference[i]<-elbow[i]-elbow[i-1]
+  }
+}
+min(difference, na.rm=TRUE)
+
+library(cluster)
+library(factoextra)
+
+#create plot of number of clusters vs total within sum of squares
+silhouette<-fviz_nbclust(x_ij, kmeans, k.max = 14,method = "silhouette")+
+  labs(title= "Optymalna liczba klastrów", subtitle = 'Indeks silhouette')+ 
+  xlab("Liczba skupień") +
+  ylab("Silhouette")
+save_plot(plot=silhouette, filename='obrazy/silhouette.png')
+
+elbow<-fviz_nbclust(x_ij, kmeans, k.max = 14,method = "wss")+
+  geom_vline(xintercept = 3, linetype = 2)+
+  labs(title= "")+ 
+  xlab("Liczba skupień") +
+  ylab("Wewnętrzna suma kwadratów")
+save_plot(plot=elbow, filename='obrazy/elbow.png')
+
+kmeans_final<-kmeans(x_ij, centers = 3, nstart = 25)
+clusters<-kmeans_final$cluster%>%as.data.frame(row.names=names(kmeans_final$cluster))
+colnames(clusters)<-'kmeans'
+
+ranking<-merge(ranking, clusters, by='row.names')
+row.names(ranking)<-ranking$Row.names
+ranking<-ranking%>%select(-1)
+```
+
+Metoda Warda
+```{r}
+library(relations)
+library(dendextend)
+library(set)
+library(factoextra)
+library(dplyr)
+#Ward
+
+ward<-cutree(hclust(dist(as.matrix(x_ij), method = "euclidean"), method='ward.D2'), k=3)%>%as.data.frame()
+colnames(ward)<-'ward'
+ranking<-merge(ranking, ward, by='row.names')
+row.names(ranking)<-ranking$Row.names
+ranking<-ranking%>%select(-1)
+
+hc.ward<-hclust(dist(as.matrix(x_ij), method = "euclidean"), method='ward.D2')
+wardMerge<-as.data.frame(hc.ward$merge)%>%
+  rename('Obiekt 1'=V1)%>%rename('Obiekt 2'=V2)
+wardMerge
+plot(hc.ward, xlab="Powiaty", ylab = "Metryka Euklidesowa",  main = '',lwd=1)
+par(lwd=2, mar=c(0,0,0,0))
+rect<-rect.hclust(hc.ward, k=3, border = 'steelblue')
+
+dend<-fviz_dend(hc.ward, cex = 0.45, k=3,
+          rect = TRUE,  
+          k_colors = c("#98C8F4","steelblue","#496075"),
+          rect_border = "black",
+          rect_fill = FALSE, 
+          horiz = TRUE,
+          lwd =0.25,
+          rect_lty = 0, ylab="Metryka Euklidesowa",
+          main= "")
+save_plot(plot=dend, filename='obrazy/ward_drzewo.png')
+
+```
+
+Mapa województwa
+```{r}
+mapa<-ggplot(kuj_pom)+
+  geom_sf(data = kuj_pom, color = 'white', fill='#98C8F4', size=15) +
+  geom_sf(data = kuj_pom_miasta, color = 'white', fill='#7094B5', size=15) +
+  geom_sf_text(
+    data = kuj_pom,
+    aes(label = JPT_NAZWA_),
+    #family = "Calibri",
+    size = 3,
+    color = 'black')+ 
+  theme_classic()+
+  theme(axis.line.x.bottom = element_blank(),
+        axis.line.y.left = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_blank())
+
+ggsave(
+  filename='obrazy/mapa.png',
+  plot = mapa,
+  scale = 1,
+  width = 8,
+  height = 8)
+```
+
+Kartogramy wyników 
+```{r}
+library(tmap)
+library(tmaptools)
+#install.packages('openxlsx')
+library(openxlsx)
+height_value = 10
+color_palette <-c('#98C8F4','#7094B5','#496075')
+
+ranking$JPT_NAZWA_<-rownames(ranking)
+kuj_pom_rank <- left_join(kuj_pom, ranking, by = "JPT_NAZWA_")
+kuj_pom_rank$Hellwig<- array(kuj_pom_rank$Hellwig)
+kuj_pom_rank$bezwzorcowa<- array(kuj_pom_rank$bezwzorcowa)
+
+bezwzorcowa<-tm_shape(kuj_pom_rank) + 
+  tm_polygons(col = "bezwzorcowa",
+              style = "cont",
+              palette =color_palette,
+              legend.reverse = TRUE,
+              border.col = 'black',
+              border.lwd = 0.6
+              )+
+  tm_text(text="bezwzorcowa", 
+          size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=0.6)
+tmap_save(bezwzorcowa, 'obrazy/bezwzorcowa.png', height= height_value)
+
+Hellwig<-tm_shape(kuj_pom_rank) + 
+  tm_polygons(col = "Hellwig",
+              style = "cont",
+              palette =color_palette,
+              legend.reverse = TRUE,
+              border.col = 'black',
+              border.lwd = 0.6
+              )+
+  tm_text(text="Hellwig", 
+          size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=0.8)
+tmap_save(Hellwig, 'obrazy/Hellwig.png', height= height_value)
+
+TOPSIS<-tm_shape(kuj_pom_rank) + 
+  tm_polygons(col = "TOPSIS",
+              style = "cont",
+              palette =color_palette,
+              legend.reverse = TRUE,
+              border.col = 'black',
+              border.lwd = 0.6
+              )+
+  tm_text(text="TOPSIS", 
+          size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=0.87)
+tmap_save(TOPSIS, 'obrazy/TOPSIS.png', height= height_value)
+
+Ward<-tm_shape(kuj_pom_rank) +
+  tm_polygons(col='ward',border.col='black',palette = c('#98C8F4','#7094B5','#496075'))+
+  tm_layout(legend.outside=TRUE)+
+  tm_legend(show=FALSE)+
+  tm_text(text='JPT_NAZWA_', size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=0.9)
+tmap_save(Ward, 'obrazy/Ward.png', height= height_value)
+
+kmean<-tm_shape(kuj_pom_rank) +
+  tm_polygons(col='kmeans',border.col='black',palette = c('#7094B5','#98C8F4','#496075'))+
+  tm_legend(show=FALSE)+
+  tm_text(text='JPT_NAZWA_', 
+          size = 0.8, 
+          ymod=0.9)
+tmap_save(kmean, 'obrazy/kmeans.png', height= height_value)
+
+```
+
+LateX - tabele z wynikami
+```{r}
+library(knitr)
+library(kableExtra)
+library("tibble")
+library(xtable)
+#Hellwig_tabela<-Hellwig_tabela[,c(3,1,2)]
+library(dplyr)
+
+tabela<-ranking%>%mutate(Powiat=rownames(ranking))%>%as.data.frame()
+row.names(tabela)<-c(1:nrow(tabela))
+
+tabela%>%
+  select(Powiat, bezwzorcowa) %>%
+  arrange(desc(bezwzorcowa)) %>%
+  as.data.frame()%>%
+  xtable(, type='latex', digits=3)
+
+tabela%>%
+  select(Powiat, Hellwig) %>%
+  arrange(desc(Hellwig)) %>%
+  as.data.frame()%>%
+  xtable(, type='latex', digits=3)
+
+tabela%>%
+  select(Powiat, TOPSIS) %>%
+  arrange(desc(TOPSIS)) %>%
+  as.data.frame()%>%
+  xtable(, type='latex', digits=3)
+
+wardMerge%>%
+  xtable(, type='latex')
+```
+
+Korealacja wartosci miedzy wynikami rankingu
+````{r}
+library(reshape2)
+library(ggthemes)
+library(extrafont)
+library(ggplot2)
+library(remotes)
+library(cowplot)
+library(dplyr)
+
+# Reorder the correlation matrix
+dataRanking<-round(cor(ranking%>%select(1:3), method='spearman'),2)
+# Melt the correlation matrix
+melted_dataRanking <- melt(dataRanking, na.rm = TRUE)
+
+# Create a ggheatmap
+rankingHeatmap <- ggplot(melted_dataRanking, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "#b5e2fa", high = "#f7a072", mid = "#f9f7f3", 
+    limit = c(-1,1), 
+    name="Korelacja\nSpearman") +
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 5) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 12, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    axis.title.y = element_blank())
+
+save_plot(plot=rankingHeatmap, filename='obrazy/corrRanking.png')
+
+whole_ranking<-melt(round(cor(ranking%>%select(1:5), method='spearman'),2))
+                          
+
+whole_rankingHeatmap <- ggplot(whole_ranking, aes(Var2, Var1, fill = value))+
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "#b5e2fa", high = "#f7a072", mid = "#f9f7f3", 
+    limit = c(-1,1), 
+    name="Korelacja\nSpearman") +
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 5) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 12, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    axis.title.y = element_blank())
+
+save_plot(plot=whole_rankingHeatmap, filename='obrazy/whole_ranking.png')
+````
+
+Korealacja wartosci miary syntetycznej od zmiennych 
+````{r}
+library(reshape2)
+rank<-ranking%>%rename( 'Powiat'='JPT_NAZWA_')
+
+linearOrdearAnalysis <- left_join(dane, rank%>%select(1,2,3,6), by = "Powiat")
+
+melted_linearOrd<-melt(round(cor(linearOrdearAnalysis%>%select(3:24), method = 'pearson'),2))
+
+corrLinear<-ggplot(
+    data =melted_linearOrd , aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile(color = "white")+
+  scale_fill_gradient2(low = "#b5e2fa", high = "#f7a072", mid = "#f9f7f3", 
+                       midpoint = 0, limit = c(-1,1), 
+                       space = "Lab", 
+                       name="Pearson\nCorrelation")+
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 1.5)+
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 5, colour = "black"),
+    axis.text.y = element_text(size = 5, colour = "black"),
+    axis.title.y = element_blank())
+
+save_plot(plot=corrLinear, filename='obrazy/zmienne.png')
+
+
+````
+
+Kartogramy wyników - ver2 (3 grupy)
+```{r}
+
+library(scico)
+library(RColorBrewer)
+library(rcartocolor)
+
+
+bezwzorcowa<-tm_shape(kuj_pom_rank) + 
+  tm_polygons(col='bezwzorcowa',
+              border.col='black', 
+              breaks = seq(min(ranking$bezwzorcowa),
+                           max(ranking$bezwzorcowa),
+                          (max(ranking$bezwzorcowa)-min(ranking$bezwzorcowa))/3%>%round(digits=2)), 
+              palette = c('#98C8F4','#7094B5','#496075')
+              )+
+  tm_text(text="bezwzorcowa", 
+          size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=0.6)
+#tmap_save(bezwzorcowa, 'obrazy/bezwzorcowa3.png', height= height_value)
+
+Hellwig<-tm_shape(kuj_pom_rank) + 
+  tm_polygons(col='Hellwig',
+              border.col='black', 
+              breaks = seq(min(ranking$Hellwig),
+                           max(ranking$Hellwig),
+                          (max(ranking$Hellwig)-min(ranking$Hellwig))/3%>%round(digits=2)), 
+              palette = c('#98C8F4','#7094B5','#496075')
+              )+
+  tm_text(text="Hellwig", 
+          size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=2)
+#tmap_save(Hellwig, 'obrazy/Hellwig3.png', height= height_value)
+
+TOPSIS<-tm_shape(kuj_pom_rank) + 
+  tm_polygons(col='TOPSIS',
+              border.col='black', 
+              breaks = seq(min(ranking$TOPSIS),
+                           max(ranking$TOPSIS),
+                          (max(ranking$TOPSIS)-min(kuj_pom_rank$TOPSIS))/3%>%round(digits=2)), 
+              palette = c('#98C8F4','#7094B5','#496075')
+              )+
+  tm_text(text="TOPSIS", 
+          size = 0.8, 
+          auto.placement=TRUE, 
+          ymod=0.87)
+#tmap_save(TOPSIS, 'obrazy/TOPSIS3.png', height= height_value)
+
+```
+
+
+
+```{r}
+library(grDevices)
+library(tmap)
+library(tmaptools)
+#install.packages('openxlsx')
+library(openxlsx)
+height_value = 5
+color_palette <-c('#ffffcc', '#c7e9b4', '#7fcdbb', '#41b6c4', '#2c7fb8', '#253494')
+dane1<-dane%>%rename(JPT_NAZWA_=Powiat)
+
+dane_ranking<-left_join(ranking, dane1, by = "JPT_NAZWA_")
+kuj_pom_dane <- left_join(kuj_pom, dane_ranking, by = "JPT_NAZWA_")
+
+for(cl in c(1:3)){
+  for(num_col in c(44:62)){
+    col_name<-colnames(kuj_pom_dane%>%filter(kuj_pom_dane$ward==cl)%>%select(num_col))[1]
+    minimum<-min(dane[,col_name])
+    maximum<-max(dane[,col_name])
+    step<-round(((maximum-minimum)/6),digits=2)
+    
+    picture<-tm_shape(kuj_pom_dane%>%filter(kuj_pom_dane$ward==cl)) + 
+                  tm_polygons(col = col_name,
+                              style = "cont",
+                              palette =rev(hcl.colors(7, "ag_GrnYl")),
+                              border.col = 'black',
+                              border.lwd = 0.05,
+                              breaks = seq(minimum, maximum,step),
+                              legend.show = FALSE
+                              )+
+                  tm_add_legend(type = "fill", 
+                                size = 0.1,
+                                col = rev(hcl.colors(7, "ag_GrnYl")),
+                                labels = round(seq(minimum, maximum,step),2),
+                                title=col_name)
+    file_name<-paste("charakterystyka", cl ,"/",col_name,".png",sep="")
+    tmap_save(picture, filename = file_name, height= height_value)
+  }
+}
+
+
+col_name<-colnames(kuj_pom_dane%>%filter(kuj_pom_dane$ward==cl)%>%select(44))[1]
+minimum<-min(dane[,col_name])
+maximum<-max(dane[,col_name])
+step<-round(((maximum-minimum)/6),digits=2)
+
+
+
+```
+
+
+```{r}
+
+
+for(i in c(3:21)){
+  dane[,i]<-dane%>%select(i)%>%round(digits=2)
+}
+dane%>%
+  select(2:21)%>%
+  as.data.frame()%>%
+  xtable(, type='latex', digits=3)
+
+```
